@@ -1,5 +1,5 @@
 ---
-name: goog-map
+name: google-map
 description: Use this skill whenever the user needs Google Maps based place search, place details, opening hours, route planning, travel time estimation, multi-stop itinerary checking, or KML export for Google My Maps. Trigger it for requests about restaurants, attractions, addresses, commute comparison, trip planning, and map export even when the user does not explicitly say Google Maps, Places API, Routes API, or KML.
 ---
 
