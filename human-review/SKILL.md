@@ -7,8 +7,9 @@ description: "Explain a code change to a human reviewer. Use only when the user 
 
 ## Scope
 
-- Default target: `HEAD`. Other modes: `--commit <sha>`, `--range a..b`, `--staged`, `--working`.
+- Default target: `HEAD`. Other targets (per user request): a specific commit, a range `a..b`, staged changes, or the working tree.
 - Ask once only if ambiguous.
+- Write the review in zh-tw.
 
 ## Workflow
 
@@ -18,8 +19,12 @@ description: "Explain a code change to a human reviewer. Use only when the user 
    - Read surrounding code if a hunk's intent depends on it; do not guess.
 2. **Group hunks by logical concern**, not by file order.
    - Repeated mechanical hunks: show one + summarize the rest in a line.
-3. **For each group, write WHAT / WHY / REVIEWER FLAG**:
-   - **WHAT**: one-sentence mechanical summary. Skip line-by-line narration.
+3. **For each group, write WHAT / HOW / WHY / REVIEWER FLAG**:
+   - **WHAT**: one-sentence summary of the change.
+   - **HOW**: explain what the code actually does — behavior before vs. after,
+     the mechanism in plain words, and any non-obvious construct
+     (locks, generics, async flow, tricky API). Assume the reviewer has NOT
+     read this part of the codebase. Skip only for trivial hunks.
    - **WHY**: design rationale; name alternatives rejected;
      say "forced choice" if there was none.
    - **REVIEWER FLAG**: the sharp objection a reviewer would raise,
@@ -31,16 +36,21 @@ description: "Explain a code change to a human reviewer. Use only when the user 
 ## Checklist
 
 - [ ] Every non-mechanical decision has a WHY.
+- [ ] Every non-trivial group has a HOW that a reviewer unfamiliar with this
+      code could follow; jargon and abbreviations are explained on first use.
+- [ ] Plain language: short sentences, concrete nouns, no undefined jargon.
 - [ ] ≥1 REVIEWER FLAG per non-trivial group (or explicit "no surprises").
 - [ ] Repeated hunks summarized, not pasted.
 - [ ] "What I did NOT do" section present.
 - [ ] No secrets / passwords / customer IPs quoted from the diff; redact (`<password>`, `<ip>`).
-- [ ] Output in zh-tw.
+- [ ] Written in zh-tw.
 - [ ] No overly long lines; wrap for human readability (aim ≤200 chars).
 
 ## Anti-patterns
 
-- Narrating the diff line-by-line (reviewer can read it).
+- Narrating the diff line-by-line (reviewer can read it) — HOW explains
+  mechanism and behavior, not "line 12 sets x, line 13 returns y".
+- Restating the code in prose without explaining what it accomplishes.
 - Padding trivial hunks with fake rationale.
 - Hiding tradeoffs as "best practice".
 - Per-file walk instead of per-concern walk.

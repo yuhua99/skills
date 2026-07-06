@@ -29,9 +29,14 @@ Keep the interaction high level. Only use these inputs:
 - `search_places(query, near?, open_now?)`
 - `get_place(place_id)`
 - `calculate_route(origin, destination, mode?, depart_at?)`
-- `generate_kml_file(document_name, places, route?, file_path?)`
+- `generate_kml_file(document_name, places, route?, file_path?)` — passed as a JSON payload via stdin or `--input`
 
 Do not introduce low-level Google parameters such as field masks, routing preferences, language settings, page size, or location bias tuning.
+
+## Built-in behavior to be aware of
+
+- All results are localized to `zh-TW`.
+- `search_places` returns at most 5 results. If the user needs more coverage, run additional, more specific queries.
 
 ## Core workflow
 
@@ -41,6 +46,8 @@ Do not introduce low-level Google parameters such as field masks, routing prefer
 4. If the user wants an importable map file, collect confirmed coordinates and run `generate_kml_file`.
 
 Prefer reusing `place_id` once you have it. It is more reliable than free-form address text.
+
+For multi-stop trip planning: resolve each stop with `search_places`, check hours with `get_place` when timing matters, calculate routes between stops, then summarize whether the plan is realistic.
 
 ## Command usage
 
@@ -71,7 +78,7 @@ Read these fields first:
 - `results[].rating`
 - `results[].google_maps_url`
 
-When multiple results are plausible, present a short disambiguation list instead of guessing.
+When multiple results are plausible, present a short disambiguation list (2-5 candidates with name and address) instead of guessing, then reuse the selected `place_id` downstream.
 
 ### `get_place`
 
@@ -164,29 +171,7 @@ Read these fields first:
 - `placemark_count`
 - `has_route`
 
-Only call this after the places and coordinates are already confirmed.
-
-## Recommended patterns
-
-### Place lookup
-
-1. Search with the user's phrase.
-2. If needed, show 2-5 likely candidates.
-3. Reuse the selected `place_id` downstream.
-
-### Trip planning
-
-1. Resolve each stop with `search_places`.
-2. Check hours with `get_place` when timing matters.
-3. Calculate routes between stops.
-4. Summarize whether the plan is realistic.
-
-### Map export
-
-1. Collect finalized places with coordinates.
-2. Add route coordinates only if already available.
-3. Generate the KML.
-4. Return the written file path.
+Only call this after the places and coordinates are already confirmed. Return the written `file_path` to the user.
 
 ## Response guidance
 
@@ -204,29 +189,3 @@ If a command fails:
 2. Check whether a prior `search_places` step is needed.
 3. If route results are empty, say no route was found for that origin, destination, and mode.
 4. If search results are empty, try a simpler or more specific query.
-
-## Examples
-
-User: `Find yakiniku restaurants near Shinjuku that are open right now.`
-
-```bash
-python3 scripts/map_cli.py search_places "yakiniku" --near "Shinjuku" --open-now
-```
-
-User: `Check whether Tokyo Tower is open today.`
-
-First search if needed, then:
-
-```bash
-python3 scripts/map_cli.py get_place "<place_id>"
-```
-
-User: `How long does it take to get from Tokyo Station to Asakusa by transit?`
-
-```bash
-python3 scripts/map_cli.py calculate_route "Tokyo Station" "Asakusa" --mode transit
-```
-
-User: `Create a Google My Maps import file for these attractions.`
-
-Build the JSON payload and run `generate_kml_file`.

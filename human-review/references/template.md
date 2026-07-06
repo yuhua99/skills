@@ -12,7 +12,10 @@
 <minimal hunk excerpt — just enough to anchor the discussion>
 ```
 
-**What:** <one-sentence mechanical summary>
+**What:** <one-sentence summary of the change>
+
+**How:** <what the code does: behavior before vs. after, the mechanism in plain
+words; explain any non-obvious construct so a reviewer new to this area can follow>
 
 **Why:** <design rationale; alternatives rejected and why; constraints that forced the choice>
 
