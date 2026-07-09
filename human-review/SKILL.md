@@ -23,9 +23,10 @@ description: "Explain a code change to a human reviewer. Use only when the user 
    - One line/range comment (`--line`/`--end-line`) at the most relevant code, covering: how it works (the mechanism and the before/after behavior — assume the reviewer has not read this code); why (rationale, and alternatives you rejected); and the sharpest objection a reviewer would raise, answered up front. Keep it short for a trivial hunk; drop the objection for rote or repeated hunks.
    - One review-level comment (no `--target-file`): overview of the groups + a "What I deliberately did NOT do" list of scope cuts with reasons.
    - Set `--type` per comment: `issue` for a problem you flag; otherwise `note` / `suggestion` / `praise`.
+   - Use newlines (blank lines between points, e.g. mechanism / why / objection) to keep long comments readable.
 4. On trigger, run `comments`:
    - Empty → approved; done.
-   - Otherwise address each: answer, fix code where warranted, reply via `add` near the comment, then run `start` again with the SAME scope to resume. Repeat until `comments` is empty.
+   - Otherwise address each: answer, fix code where warranted, run `start` again with the SAME scope to resume, then reply via `add` near each comment. Repeat until `comments` is empty. `add` only works while a session is open — always `start` before posting replies.
 
 All comment content you post is in zh-tw.
 
@@ -43,3 +44,4 @@ All comment content you post is in zh-tw.
 - `start` reports a review is already open: ask the human to close it (press q) and retry.
 - `comments` returns [] right after the trigger: treat as approval.
 - If the review exits abnormally, no trigger is sent; the human will tell you when they are done.
+- Amending/rebasing the reviewed commit changes the scope's identity: a `start` after that opens a NEW session. Post replies only after `start`, never into a closed session.
