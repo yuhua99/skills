@@ -5,63 +5,41 @@ description: "Explain a code change to a human reviewer. Use only when the user 
 
 # Human Review
 
-## Scope
+## Tool
+- Everything goes through the wrapper `{baseDir}/scripts/tuicr-review.sh`.
+- Subcommands:
+  - `start [--repo PATH] [SCOPE]` — open the review and print the session slug.
+  - `comments [--repo PATH]` — print new human comments as a JSON array.
+  - `add [--repo PATH] <flags> "text"` — post a comment. Supports `--target-file`, `--line`, `--end-line`, `--side old|new`, `--type issue|suggestion|note|praise`.
 
-- Default target: `HEAD`. Other targets (per user request): a specific commit, a range `a..b`, staged changes, or the working tree.
-- Ask once only if ambiguous.
-- Write the review in zh-tw.
+## Scope
+- Pass SCOPE to `start`: `working` (uncommitted changes, the default), a git revision/range (e.g. `start HEAD`, `start main..HEAD`), or `start pr <n>`. Ask the user once if the scope is not given.
 
 ## Workflow
+1. Gather: `git --no-pager show/diff` for the scope; read surrounding code when a hunk's intent depends on it; do not guess.
+2. Group hunks by logical concern (not file order). Draft ALL comments before running `start`.
+3. Run `start` (capture the slug), then post every drafted comment via `add`. Per logical group:
+   - One file-level comment (`--target-file`, no `--line`): one sentence on what the change does.
+   - One line/range comment (`--line`/`--end-line`) at the most relevant code, covering: how it works (the mechanism and the before/after behavior — assume the reviewer has not read this code); why (rationale, and alternatives you rejected); and the sharpest objection a reviewer would raise, answered up front. Keep it short for a trivial hunk; drop the objection for rote or repeated hunks.
+   - One review-level comment (no `--target-file`): overview of the groups + a "What I deliberately did NOT do" list of scope cuts with reasons.
+   - Set `--type` per comment: `issue` for a problem you flag; otherwise `note` / `suggestion` / `praise`.
+4. On trigger, run `comments`:
+   - Empty → approved; done.
+   - Otherwise address each: answer, fix code where warranted, reply via `add` near the comment, then run `start` again with the SAME scope to resume. Repeat until `comments` is empty.
 
-1. **Gather**:
-   - `git --no-pager show --stat <ref>` then `git --no-pager show <ref>`.
-   - For uncommitted, use `git diff [--cached]`.
-   - Read surrounding code if a hunk's intent depends on it; do not guess.
-2. **Group hunks by logical concern**, not by file order.
-   - Repeated mechanical hunks: show one + summarize the rest in a line.
-3. **For each group, write WHAT / HOW / WHY / REVIEWER FLAG**:
-   - **WHAT**: one-sentence summary of the change.
-   - **HOW**: explain what the code actually does — behavior before vs. after,
-     the mechanism in plain words, and any non-obvious construct
-     (locks, generics, async flow, tricky API). Assume the reviewer has NOT
-     read this part of the codebase. Skip only for trivial hunks.
-   - **WHY**: design rationale; name alternatives rejected;
-     say "forced choice" if there was none.
-   - **REVIEWER FLAG**: the sharp objection a reviewer would raise,
-     phrased and answered up front. Skip only for truly mechanical hunks.
-4. **Render** following `references/template.md`. Cut empty sections; do not pad.
-5. **End with "What I deliberately did NOT do"** — table of scope cuts with reasons.
-6. **Self-check** the checklist below before sending.
+All comment content you post is in zh-tw.
 
 ## Checklist
-
-- [ ] Every non-mechanical decision has a WHY.
-- [ ] Every non-trivial group has a HOW that a reviewer unfamiliar with this
-      code could follow; jargon and abbreviations are explained on first use.
-- [ ] Plain language: short sentences, concrete nouns, no undefined jargon.
-- [ ] ≥1 REVIEWER FLAG per non-trivial group (or explicit "no surprises").
-- [ ] Repeated hunks summarized, not pasted.
-- [ ] "What I did NOT do" section present.
-- [ ] No secrets / passwords / customer IPs quoted from the diff; redact (`<password>`, `<ip>`).
-- [ ] Written in zh-tw.
-- [ ] No overly long lines; wrap for human readability (aim ≤200 chars).
+- Every non-trivial decision has a why; every non-trivial group has a how a reviewer unfamiliar with the code could follow; jargon explained on first use.
+- At least one anticipated objection per non-trivial group, or say there are no surprises.
+- Repeated trivial hunks: annotate one, summarize the rest in the review-level comment.
+- No secrets/passwords/customer IPs quoted; redact (`<password>`, `<ip>`).
 
 ## Anti-patterns
+- Padding trivial hunks with fake rationale; hiding tradeoffs as "best practice".
+- Putting everything into one review-level comment instead of anchoring each point to the code it is about.
 
-- Narrating the diff line-by-line (reviewer can read it) — HOW explains
-  mechanism and behavior, not "line 12 sets x, line 13 returns y".
-- Restating the code in prose without explaining what it accomplishes.
-- Padding trivial hunks with fake rationale.
-- Hiding tradeoffs as "best practice".
-- Per-file walk instead of per-concern walk.
-- Skipping "what I didn't do".
-
-## Output
-
-- Write to `./review-<ref>.md` in the current working directory by default.
-  - Examples: `./review-10d9caa3.md`, `./review-staged.md`, `./review-working.md`.
-  - Overwrite if the file exists.
-- After writing, reply in chat with just the file path and a 2-3 line summary.
-  - Inline in chat only if the user asks.
-- If >500 diff lines or >5 files, still write the full file,
-  but in chat offer to walk through it section by section.
+## Gotchas
+- `start` reports a review is already open: ask the human to close it (press q) and retry.
+- `comments` returns [] right after the trigger: treat as approval.
+- If the review exits abnormally, no trigger is sent; the human will tell you when they are done.
