@@ -66,8 +66,19 @@ parse_repo_arg() {
 }
 
 resolve_slug() {
+    local repo="$1" slugfile
+    slugfile="$STATE_DIR/$(sha16 "$repo").slug"
+    if [ -s "$slugfile" ]; then
+        touch "$slugfile"
+        cat "$slugfile"
+        return
+    fi
+    resolve_slug_from_list "$repo"
+}
+
+resolve_slug_from_list() {
     local repo="$1"
-    local repohash slugfile list active_count active_slug saved
+    local repohash slugfile list active_count active_slug
     repohash="$(sha16 "$repo")"
     slugfile="$STATE_DIR/${repohash}.slug"
 
@@ -79,15 +90,6 @@ resolve_slug() {
         printf '%s\n' "$active_slug" > "$slugfile"
         printf '%s' "$active_slug"
         return
-    fi
-
-    if [ -f "$slugfile" ]; then
-        saved="$(cat "$slugfile")"
-        if printf '%s' "$list" | jq -e --arg s "$saved" 'any(.slug == $s)' >/dev/null; then
-            printf '%s\n' "$saved" > "$slugfile"
-            printf '%s' "$saved"
-            return
-        fi
     fi
 
     local total
@@ -132,11 +134,12 @@ cmd_start() {
     local repo
     repo="$(resolve_repo "$REPO")"
 
-    if tmux list-panes -a -F '#{pane_current_command}' 2>/dev/null | grep -qx tuicr; then
+    if tmux list-panes -F '#{pane_current_command}' 2>/dev/null | grep -qx tuicr; then
         die "tuicr already running in another pane; ask the human to close it first (press q)."
     fi
 
-    local agent_pane win_h lines trigger tuicr_cmd new_pane
+    local agent_pane win_h lines trigger tuicr_cmd new_pane before
+    before="$(tuicr review list --repo "$repo" 2>/dev/null | jq -r '.[].slug' || true)"
     agent_pane="$TMUX_PANE"
     win_h="$(tmux display-message -p '#{window_height}')"
     lines=$(( win_h * 80 / 100 ))
@@ -157,8 +160,9 @@ cmd_start() {
     {
         printf '#!/usr/bin/env bash\n'
         printf 'if %s; then\n' "$tuicr_cmd"
-        printf '  tmux send-keys -t %q -l %q\n' "$agent_pane" "$trigger"
-        printf '  tmux send-keys -t %q Enter\n' "$agent_pane"
+        printf '  if tmux send-keys -t %q -l %q 2>/dev/null; then\n' "$agent_pane" "$trigger"
+        printf '    tmux send-keys -t %q Enter 2>/dev/null || true\n' "$agent_pane"
+        printf '  fi\n'
         printf 'fi\n'
         printf 'rm -f -- "$0"\n'
     } > "$launcher"
@@ -166,14 +170,18 @@ cmd_start() {
     new_pane="$(tmux split-window -d -P -F '#{pane_id}' -b -l "$lines" -c "$repo" "bash $(printf '%q' "$launcher")")"
     tmux select-pane -t "$new_pane"
 
-    mkdir -p "$STATE_DIR"
     local repohash slugfile slug i
     repohash="$(sha16 "$repo")"
     slugfile="$STATE_DIR/${repohash}.slug"
+    rm -f "$slugfile"
 
     for i in $(seq 1 30); do
         sleep 1
-        slug="$(tuicr review list --repo "$repo" 2>/dev/null | jq -r '[.[] | select(.active == true)][0].slug // empty')"
+        slug="$(tuicr review list --repo "$repo" 2>/dev/null | jq -r --arg before "$before" '
+            ($before | split("\n") | map(select(length > 0))) as $b
+            | [.[] | select(.active == true) | .slug] as $act
+            | ([$act[] | select(($b | index(.)) | not)][0])
+              // (if ($act | length) == 1 then $act[0] else empty end)')"
         if [ -n "$slug" ]; then
             printf '%s\n' "$slug" > "$slugfile"
             printf '%s\n' "$slug"
@@ -188,13 +196,17 @@ cmd_comments() {
     need tuicr; need jq
     local repo slug slughash seenfile comments filtered
     repo="$(resolve_repo "$REPO")"
-    mkdir -p "$STATE_DIR"
     slug="$(resolve_slug "$repo")"
+
+    if ! comments="$(tuicr review comments --repo "$repo" --session "$slug" 2>/dev/null)"; then
+        slug="$(resolve_slug_from_list "$repo")"
+        comments="$(tuicr review comments --repo "$repo" --session "$slug")"
+    fi
+
     slughash="$(sha16 "$slug")"
     seenfile="$STATE_DIR/${slughash}.seen"
     touch "$seenfile"
 
-    comments="$(tuicr review comments --repo "$repo" --session "$slug")"
     filtered="$(printf '%s' "$comments" | jq --rawfile seenraw "$seenfile" '
         ($seenraw | split("\n") | map(select(length > 0))) as $s
         | map(select(.id as $id | ($s | index($id | tostring)) | not))
@@ -210,17 +222,24 @@ cmd_add() {
     need tuicr; need jq
     local repo slug slughash seenfile out id
     repo="$(resolve_repo "$REPO")"
-    mkdir -p "$STATE_DIR"
     slug="$(resolve_slug "$repo")"
+
+    add_once() {
+        if [ "${#PASSTHRU[@]}" -gt 0 ]; then
+            tuicr review add --repo "$repo" --session "$slug" --username "$AGENT_USER" "${PASSTHRU[@]}"
+        else
+            tuicr review add --repo "$repo" --session "$slug" --username "$AGENT_USER"
+        fi
+    }
+
+    if ! out="$(add_once 2>/dev/null)"; then
+        slug="$(resolve_slug_from_list "$repo")"
+        out="$(add_once)"
+    fi
+
     slughash="$(sha16 "$slug")"
     seenfile="$STATE_DIR/${slughash}.seen"
     touch "$seenfile"
-
-    if [ "${#PASSTHRU[@]}" -gt 0 ]; then
-        out="$(tuicr review add --repo "$repo" --session "$slug" --username "$AGENT_USER" "${PASSTHRU[@]}")"
-    else
-        out="$(tuicr review add --repo "$repo" --session "$slug" --username "$AGENT_USER")"
-    fi
     if ! id="$(printf '%s' "$out" | jq -r '.id // empty' 2>/dev/null)" || [ -z "$id" ] || [ "$id" = "null" ]; then
         printf '%s\n' "$out"
         die "comment was posted but its id could not be parsed; it may resurface in 'comments' output"
