@@ -1,92 +1,90 @@
 ---
 name: write-agents-md
-description: "Use when writing, scaffolding, auditing, or trimming an AGENTS.md (or CLAUDE.md). Produces a lean, ownership-driven contract that front-loads project-specific invariants and runnable quality gates over generic best-practice filler."
+description: "AGENTS.md (or CLAUDE.md): write, scaffold, audit, or trim into a lean ownership-driven contract. Front-load project invariants and runnable quality gates; cut generic best-practice filler."
 ---
 
 # Writing an AGENTS.md
 
-An AGENTS.md is loaded into the agent's context **every session**. Every line costs
-budget and competes for attention. The goal is maximum signal per token: tell the
-agent what it **cannot infer** about *this* repo, and nothing it already knows.
+An AGENTS.md is loaded **every session**. Maximum signal per token: only what a competent agent **cannot infer** about *this* repo.
 
-## The one test for every line
+## The one test
 
 > Would a competent agent get this wrong without the line being here?
 
-- **Yes** → keep it (project layout, invariants, exact commands, security boundaries).
-- **No** → cut it. Generic best practice ("prefer enums", "write tests", "name things well")
-  is already in the model. Restating it wastes budget and buries the signal.
+- **Yes** → keep (layout, invariants, exact commands, security boundaries).
+- **No** → cut. Generic best practice is already in the model.
 
-## Ordering: load-bearing first
+Every branch below is done only when every remaining line passes the one test, and removing any remaining line would cause a wrong action.
 
-Put the rules that cause **bugs, data loss, or security holes if violated** at the top.
-An agent that stops reading early must still hit the critical constraints first.
+## Branches
 
-Recommended order:
+### Scaffold / write
+1. Repo identity — stack, what it does, entry point (1–3 lines).
+2. Invariants — mine the codebase for multi-tenancy filters, lock order, secret handling, panic/unwrap bans; only real ones.
+3. Architecture contract — `path — owns X only` where ownership is non-obvious or siblings could collide.
+4. Quality gates — exact copy-pasteable commands from the repo's real tooling.
+5. Commit format — one block if the repo has one.
+6. Conventions — only project-specific rules; delete a whole generic section.
 
-1. **One-line repo identity** — what this is, language/stack, entry point.
-2. **Invariants** — the non-negotiable correctness/security rules (see below).
-3. **Architecture contract** — the source-layout ownership map.
-4. **Quality gates** — exact runnable commands.
-5. **Commit format.**
-6. Everything else (type/serde/error conventions) only if project-specific.
+Done when: invariants are load-bearing and real; gates run (or handoff says why not); no section fails the one test.
 
-## Section guide
+### Audit / trim
+Walk every line with the one test. Cut no-ops, hedged prose ("where practical"), contrapositive boundary rules that restate the layout map, and type-system lectures. Prefer rules and commands over explanations.
 
-### Repo identity (1–3 lines)
-Stack, what the binary/package does, the single most important file. No fluff.
+Done when: every remaining line passes the one test; critical invariants still sit above optional conventions.
 
-### Invariants (the highest-value section)
-The rules that are specific to this repo and expensive to discover. Examples from real files:
-- `Every records/categories query must filter on owner_user_id = ?` (multi-tenancy).
-- `Never hold a read lock while acquiring a write lock in the same scope` (deadlock).
+## Ordering (load-bearing first)
+
+An agent that stops early must still hit the rules that cause bugs, data loss, or security holes:
+
+1. Repo identity
+2. Invariants
+3. Architecture contract
+4. Quality gates
+5. Commit format
+6. Conventions (only if project-specific)
+
+## Section content
+
+### Invariants
+Repo-specific, expensive to discover. Examples:
+- `Every records/categories query must filter on owner_user_id = ?`
+- `Never hold a read lock while acquiring a write lock in the same scope`
 - `Do not print tokens, cookies, or credential file contents.`
 - `Never .unwrap() in src/; use ? or .map_err`.
 
-If the repo has none of these, the file can be short — that's fine. Don't invent ceremony.
+None found → keep the file short. Don't invent ceremony.
 
-### Architecture contract (the layout map)
-A `path — owns X only` list. The map's job is to disambiguate **where new code goes**, not to describe what each file is.
-
-- List a file when its ownership boundary isn't obvious from its name, or when sibling files could plausibly own the same thing (e.g. `records/finalize.rs` vs `records/settlement.rs`).
-- Skip files whose name already says what they own (`config.rs`, `cli.rs` with no siblings).
-- Add boundary rules only for the mistakes an agent would plausibly make — not the contrapositive of every layout line.
+### Architecture contract
+Disambiguate **where new code goes**, not what each file is.
+- List a file when ownership isn't obvious from its name, or siblings could own the same thing.
+- Skip files whose name already says the ownership (`config.rs`, `cli.rs` with no siblings).
+- Boundary rules only for mistakes an agent would plausibly make.
+- Soft cap: each file ~600 LOC max; over that, split by purpose/ownership. Avoid catch-all modules (`utils`, `helpers`, `misc`).
 
 ### Quality gates
-Exact, copy-pasteable commands the agent runs before handing off. This is the most
-actionable content in the file — prefer it over prose like "make sure tests pass".
+Exact commands before handoff — prefer over "make sure tests pass".
 
 ```bash
-<format command>
-<lint command, e.g. with -D warnings>
-<test command>
+<format>
+<lint, e.g. -D warnings>
+<test>
 ```
 
-State what to do when a gate can't run (missing tooling/network/credentials): say so in
-the handoff rather than skipping silently.
+If a gate can't run (tooling/network/credentials), say so in the handoff; never skip silently.
 
 ### Commit format
-One block. `<type>: <imperative summary>`, allowed types, 2–3 examples, ban vague messages.
+`<type>: <imperative summary>` — allowed types, 2–3 examples, ban vague messages (`update`, `cleanup`, `wip`).
 
-### Conventions (types / serde / errors / naming) — OPTIONAL
-Include a rule here **only if it is project-specific**, e.g. "`serde_json::Value` allowed
-only at the raw-compat boundary, convert to typed models elsewhere." Cut anything that is
-just language best practice. If a whole section is generic, delete the section.
+### Conventions — OPTIONAL
+Only project-specific rules (e.g. raw-JSON only at a compat boundary). Generic language advice → delete the section.
 
-## Things to cut (common bloat)
+## Style of the file itself
 
-- Generic type-system lectures ("prefer enums over strings", "Option for real optionality").
-- Hedged prose ("where practical", "when possible", "unless compatibility requires") — an
-  agent can't act on soft guidance crisply. Make it a rule or drop it.
-- The contrapositive boundary rules that just restate the layout map.
-- Arbitrary numbers stated with sub-bullets (a soft "~600 LOC, split by ownership" is one line).
-
-## Style rules for the file itself
-
-- Prefer **rules and commands** over explanations. Verifiable > aspirational.
-- Keep it scannable: short sections, bullets, fenced command blocks.
-- Match the repo's real state — don't describe tests/tooling that don't exist.
-- A lean 40–80 line file usually beats a 200-line one. Trim until every line passes the test above.
+- Rules and commands over explanations. Verifiable > aspirational.
+- Short sections, bullets, fenced commands.
+- Match the repo's real state — no phantom tests/tooling.
+- Lean 40–80 lines usually beats 200. Trim until every line passes the one test.
 
 ## Skeleton
 
@@ -120,5 +118,5 @@ Avoid catch-all modules (`utils`, `helpers`, `misc`); name files by domain. Targ
 Avoid `update`, `cleanup`, `wip`.
 
 ## Conventions  <!-- only if project-specific -->
-- <project-specific rule, e.g. raw-JSON boundary, error constructor, multi-tenancy filter>
+- <project-specific rule>
 ```

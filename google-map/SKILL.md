@@ -1,61 +1,32 @@
 ---
 name: google-map
-description: Use this skill whenever the user needs Google Maps based place search, place details, opening hours, route planning, travel time estimation, multi-stop itinerary checking, or KML export for Google My Maps. Trigger it for requests about restaurants, attractions, addresses, commute comparison, trip planning, and map export even when the user does not explicitly say Google Maps, Places API, Routes API, or KML.
+description: Google Maps place search, details/hours, route and travel time, multi-stop itinerary, or KML for My Maps. Use for restaurants, attractions, addresses, commute, trip planning, or map export even when the user does not name Google Maps or its APIs. Results are localized to zh-TW.
 ---
 
-Use the bundled CLI at `scripts/map_cli.py`, resolved relative to this `SKILL.md` file rather than assuming the current working directory is the repo root.
+Use the bundled CLI at `scripts/map_cli.py`, resolved relative to this `SKILL.md` (not the caller's cwd).
 
-When running commands from another working directory, first resolve the directory containing `SKILL.md`, then invoke `scripts/map_cli.py` from there.
+Commands: `search_places` · `get_place` · `calculate_route` · `generate_kml_file`. The CLI owns Places API, Routes API, and `MAPS_API_KEY`. Call the CLI only — never raw Google APIs, field masks, language, page size, or location-bias knobs.
 
-This skill is a high-level wrapper around four commands:
+## Built-in behavior
 
-- `search_places`
-- `get_place`
-- `calculate_route`
-- `generate_kml_file`
+- Locale: `zh-TW`. Units: metric. `search_places` returns ≤5 hits; need broader coverage → issue more specific queries.
+- **place_id-first**: once you have a `place_id`, reuse it over free-form address text.
+- **disambiguate**: when multiple hits are plausible, list 2–5 candidates (name + address) and wait; do not guess.
+- **confirmed coordinates**: call `generate_kml_file` only after places and coordinates are confirmed.
 
-The CLI already handles:
+## Workflow
 
-- Places API
-- Routes API
-- `MAPS_API_KEY` from the environment
+1. Vague place name → `search_places`. Done when a single place is chosen (or disambiguated with the user).
+2. Hours, phone, website, or map URL → `get_place <place_id>`. Done when the requested fields are in hand.
+3. Travel time or distance → `calculate_route`. Mode comparison → one call per `--mode`, then compare durations. Done when distance + duration (per mode) are reported.
+4. Multi-stop itinerary → resolve every stop (`search_places` / `place_id`), `get_place` when timing matters, `calculate_route` between consecutive stops. Done when every stop is resolved, every leg has time/distance, and the summary states whether the plan fits the user's time window (or says the window is unknown).
+5. Importable map → `generate_kml_file` with confirmed coordinates. Done when `file_path` is returned to the user.
 
-Do not bypass the CLI with direct Google API calls unless the CLI clearly cannot do the task.
+## Commands
 
-## What to expose
-
-Keep the interaction high level. Only use these inputs:
-
-- `search_places(query, near?, open_now?)`
-- `get_place(place_id)`
-- `calculate_route(origin, destination, mode?, depart_at?)`
-- `generate_kml_file(document_name, places, route?, file_path?)` — passed as a JSON payload via stdin or `--input`
-
-Do not introduce low-level Google parameters such as field masks, routing preferences, language settings, page size, or location bias tuning.
-
-## Built-in behavior to be aware of
-
-- All results are localized to `zh-TW`.
-- `search_places` returns at most 5 results. If the user needs more coverage, run additional, more specific queries.
-
-## Core workflow
-
-1. If the user names a place vaguely, run `search_places` first.
-2. If the user needs hours, phone, website, or map URL, run `get_place` on the chosen `place_id`.
-3. If the user needs travel time or distance, run `calculate_route`.
-4. If the user wants an importable map file, collect confirmed coordinates and run `generate_kml_file`.
-
-Prefer reusing `place_id` once you have it. It is more reliable than free-form address text.
-
-For multi-stop trip planning: resolve each stop with `search_places`, check hours with `get_place` when timing matters, calculate routes between stops, then summarize whether the plan is realistic.
-
-## Command usage
-
-All example paths are relative to this `SKILL.md` file, not the caller's current working directory.
+Paths relative to this `SKILL.md`.
 
 ### `search_places`
-
-Use for place discovery.
 
 ```bash
 python3 scripts/map_cli.py search_places "<query>"
@@ -63,47 +34,21 @@ python3 scripts/map_cli.py search_places "<query>" --near "<near>"
 python3 scripts/map_cli.py search_places "<query>" --open-now
 ```
 
-Inputs:
-
-- `query`: place, restaurant, attraction, or address-like search text
+- `query`: place / restaurant / attraction / address-like text
 - `near`: optional place name, address, or `lat,lng`
-- `open_now`: optional filter for currently open places
+- `open_now`: optional currently-open filter
 
-Read these fields first:
-
-- `results[].name`
-- `results[].place_id`
-- `results[].formatted_address`
-- `results[].location`
-- `results[].rating`
-- `results[].google_maps_url`
-
-When multiple results are plausible, present a short disambiguation list (2-5 candidates with name and address) instead of guessing, then reuse the selected `place_id` downstream.
+Read first: `results[].name`, `place_id`, `formatted_address`, `location`, `rating`, `google_maps_url`.
 
 ### `get_place`
-
-Use for detailed place information.
 
 ```bash
 python3 scripts/map_cli.py get_place "<place_id>"
 ```
 
-Read these fields first:
-
-- `name`
-- `formatted_address`
-- `opening_hours.open_now`
-- `opening_hours.weekday_text`
-- `formatted_phone_number`
-- `website`
-- `url`
-- `rating`
-
-Use this when the user asks whether a place is open, asks for contact info, or wants the official map link.
+Read first: `name`, `formatted_address`, `opening_hours.open_now`, `opening_hours.weekday_text`, `formatted_phone_number`, `website`, `url`, `rating`.
 
 ### `calculate_route`
-
-Use for travel time, distance, and route guidance.
 
 ```bash
 python3 scripts/map_cli.py calculate_route "<origin>" "<destination>"
@@ -111,36 +56,19 @@ python3 scripts/map_cli.py calculate_route "<origin>" "<destination>" --mode tra
 python3 scripts/map_cli.py calculate_route "<origin>" "<destination>" --mode driving --depart-at now
 ```
 
-Inputs:
+- `origin` / `destination`: `place_id`, address, or `lat,lng`
+- `mode`: `driving` | `walking` | `bicycling` | `transit`
+- `depart_at`: optional `now` | Unix timestamp | ISO-8601/RFC3339
 
-- `origin`: `place_id`, address, or `lat,lng`
-- `destination`: `place_id`, address, or `lat,lng`
-- `mode`: `driving`, `walking`, `bicycling`, or `transit`
-- `depart_at`: optional `now`, Unix timestamp, or ISO-8601/RFC3339 datetime
-
-Read these fields first:
-
-- `summary.distance_text`
-- `summary.duration_text`
-- `summary.duration_seconds`
-- `summary.static_duration_seconds`
-- `summary.warnings`
-- `legs[].steps[].instruction`
-- `polyline`
-
-If the user asks for mode comparison, run the command multiple times with different `--mode` values and compare the durations clearly.
+Read first: `summary.distance_text`, `summary.duration_text`, `summary.duration_seconds`, `summary.static_duration_seconds`, `summary.warnings`, `legs[].steps[].instruction`, `polyline`.
 
 ### `generate_kml_file`
 
-Use for Google My Maps export.
-
-The command reads JSON from stdin or from `--input`.
+JSON via stdin or `--input`.
 
 ```bash
 python3 scripts/map_cli.py generate_kml_file --input <json-file>
 ```
-
-Expected payload shape:
 
 ```json
 {
@@ -164,28 +92,16 @@ Expected payload shape:
 }
 ```
 
-Read these fields first:
+Read first: `file_path`, `bytes_written`, `placemark_count`, `has_route`.
 
-- `file_path`
-- `bytes_written`
-- `placemark_count`
-- `has_route`
+## Response
 
-Only call this after the places and coordinates are already confirmed. Return the written `file_path` to the user.
+- Summarize; dump raw JSON only if asked.
+- Search hits: name + address. Routes: distance + duration.
+- API key errors → tell the user `MAPS_API_KEY` is missing or invalid.
 
-## Response guidance
+## Failures
 
-- Summarize useful results instead of dumping raw JSON unless the user asked for machine-readable output.
-- Include place name and address when presenting search hits.
-- Include distance and duration when presenting routes.
-- Point out ambiguity when results are not clearly unique.
-- If the CLI reports an API key problem, tell the user that `MAPS_API_KEY` is missing or invalid.
-
-## Failure handling
-
-If a command fails:
-
-1. Check whether `MAPS_API_KEY` is available.
-2. Check whether a prior `search_places` step is needed.
-3. If route results are empty, say no route was found for that origin, destination, and mode.
-4. If search results are empty, try a simpler or more specific query.
+1. Check `MAPS_API_KEY`.
+2. Empty search → simpler or more specific query; may need a prior `search_places` before `get_place` / route.
+3. Empty route → no route for that origin, destination, and mode.
