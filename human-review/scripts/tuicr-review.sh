@@ -220,9 +220,15 @@ cmd_comments() {
 cmd_add() {
     parse_repo_arg "$@"
     need tuicr; need jq
-    local repo slug slughash seenfile out id
+    local repo slug slughash seenfile out id active_slug
     repo="$(resolve_repo "$REPO")"
-    slug="$(resolve_slug "$repo")"
+
+    active_slug="$(tuicr review list --repo "$repo" 2>/dev/null | jq -r '[.[] | select(.active == true)] | if length == 1 then .[0].slug else empty end')"
+    if [ -z "$active_slug" ]; then
+        die "no active review session; run 'start <scope>' first, then re-post this comment."
+    fi
+    slug="$active_slug"
+    printf '%s\n' "$slug" > "$STATE_DIR/$(sha16 "$repo").slug"
 
     add_once() {
         if [ "${#PASSTHRU[@]}" -gt 0 ]; then
@@ -232,10 +238,7 @@ cmd_add() {
         fi
     }
 
-    if ! out="$(add_once 2>/dev/null)"; then
-        slug="$(resolve_slug_from_list "$repo")"
-        out="$(add_once)"
-    fi
+    out="$(add_once)" || die "posting failed (session may have just closed); run 'start <scope>' and re-post."
 
     slughash="$(sha16 "$slug")"
     seenfile="$STATE_DIR/${slughash}.seen"
