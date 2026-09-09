@@ -24,7 +24,7 @@ Ask once if SCOPE is missing. Use `working`, a revision/range, or `pr <n>`.
 2. Group hunks by concern and draft all comments before `start`.
    Split each hunk into logical blocks of one or a few adjacent lines. Explain each block's old behavior -> change -> new behavior, and why; explain intent and effects rather than paraphrasing syntax.
    Give distinct changes within a function separate comments, anchored to the relevant lines.
-   Summarize tests, codegen, and pure moves in one line per logical group; still name any behavior or test-expectation changes.
+   Summarize tests, codegen, and pure moves in one line per logical group; still name any behavior or test-expectation changes. For copied blocks, name the source in one line; explain any differences from the source and their behavioral effects separately.
    Ground reasons in the implementation context; label inferred reasons as assumptions.
    Add a likely objection or toy before/after only when it clarifies a trade-off or a confusing change. Redact secrets.
    Done when every changed hunk is covered by block-level explanations or explicitly included in a brief-summary exception above.
