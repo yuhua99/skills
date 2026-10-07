@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Per-repo state: the chosen session slug, and the comment ids already returned
-# (so a comment is never shown twice).
+# Per-repo state: the chosen session slug, and the human comment ids already
+# returned (so a comment is never shown twice).
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/human-review"
 AGENT_USER="agent"
 
@@ -11,17 +11,26 @@ usage() {
 Usage: $(basename "$0") <subcommand> [--repo PATH] [args...]
 
 Subcommands:
-  start [--repo PATH] [SCOPE...]
+  start [--repo PATH] [SCOPE...] [--comments FILE]
       Open the review for SCOPE and print the session slug. SCOPE is 'working'
       (uncommitted changes, the default), a git revision/range, or 'pr <n>'.
+      With --comments, post FILE (see add --input) before showing the review.
       When the human finishes, a trigger message is sent back with new comments.
 
-  comments [--repo PATH]
+  comments [--repo PATH] [--mine]
       Print new human comments for the current review as a JSON array.
+      --mine prints all agent comments instead (for their ids).
 
   add [--repo PATH] <flags> [text]
       Post a comment to the current review; prints it as JSON. Supports
       --target-file, --line, --end-line, --side, --type.
+
+  add [--repo PATH] --input FILE
+      Post every JSON object in FILE, in order (keys: file, line, end_line,
+      side, comment_type, content); prints {id, location} per comment.
+
+  delete [--repo PATH] <comment-id>
+      Delete an agent comment from the current review.
 EOF
 }
 
@@ -34,6 +43,12 @@ sha16() { printf '%s' "$1" | sha256sum | cut -c1-16; }
 prune_state() {
     [ -d "$STATE_DIR" ] || return 0
     find "$STATE_DIR" -maxdepth 1 -type f -mtime +7 -delete 2>/dev/null || true
+}
+
+# Comments file -> one compact JSON object per line; rejects unknown keys,
+# which tuicr would silently ignore (misplacing or untyping the comment).
+read_comments() {
+    jq -c 'if type == "object" and has("content") and (keys - ["file","line","end_line","side","comment_type","content"] == []) then . else error("bad comment: \(tojson)") end' "$1"
 }
 
 resolve_repo() {
@@ -110,8 +125,16 @@ resolve_slug_from_list() {
 }
 
 preflight() {
-    need tuicr; need jq; need tmux
-    [ -n "${TMUX:-}" ] || die "not in tmux; restart the agent inside tmux."
+    need tuicr; need jq
+    if [ "${HERDR_ENV:-}" = 1 ]; then
+        need herdr
+        MUX=herdr
+    elif [ -n "${TMUX:-}" ]; then
+        need tmux
+        MUX=tmux
+    else
+        die "not in herdr or tmux; restart the agent inside one."
+    fi
 }
 
 scope_to_tuicr() {
@@ -131,7 +154,24 @@ cmd_start() {
     preflight
     prune_state
 
-    local repo wrapper_path source
+    local repo wrapper_path source comments_file="" i
+    local -a scope=()
+    for ((i = 0; i < ${#PASSTHRU[@]}; i++)); do
+        if [ "${PASSTHRU[i]}" = "--comments" ]; then
+            i=$((i + 1))
+            comments_file="${PASSTHRU[i]:-}"
+            [ -n "$comments_file" ] || die "--comments requires a file"
+        else
+            scope+=("${PASSTHRU[i]}")
+        fi
+    done
+    PASSTHRU=("${scope[@]}")
+    # Reject a bad file before a review window opens.
+    if [ -n "$comments_file" ]; then
+        local drafts
+        drafts="$(read_comments "$comments_file")" || die "invalid comments file $comments_file"
+        [ -n "$drafts" ] || die "no comments in $comments_file"
+    fi
     repo="$(resolve_repo "$REPO")"
     source="${BASH_SOURCE[0]}"
     if [[ "$source" != */* ]]; then
@@ -139,13 +179,19 @@ cmd_start() {
     fi
     wrapper_path="$(cd -- "$(dirname -- "$source")" && pwd -P)/$(basename -- "$source")"
 
-    if tmux list-windows -F '#{window_name}' 2>/dev/null | grep -qx review; then
-        die "review window already open; ask the human to close it first (press q)."
+    local agent_pane tuicr_cmd new_window tab_id before
+    if [ "$MUX" = herdr ]; then
+        if herdr tab list --workspace "$HERDR_WORKSPACE_ID" | jq -e '.result.tabs | any(.label == "review")' >/dev/null; then
+            die "review tab already open; ask the human to close it first (press q)."
+        fi
+        agent_pane="$HERDR_PANE_ID"
+    else
+        if tmux list-windows -F '#{window_name}' 2>/dev/null | grep -qx review; then
+            die "review window already open; ask the human to close it first (press q)."
+        fi
+        agent_pane="$TMUX_PANE"
     fi
-
-    local agent_pane tuicr_cmd new_window before
     before="$(tuicr review list --repo "$repo" 2>/dev/null | jq -r '.[].slug' || true)"
-    agent_pane="$TMUX_PANE"
 
     local -a TUICR_ARGS
     scope_to_tuicr
@@ -163,7 +209,12 @@ cmd_start() {
         printf '  if comments="$(%q comments --repo %q)"; then\n' "$wrapper_path" "$repo"
         printf '    submit=1\n'
         printf '    if printf "%%s" "$comments" | jq -e "type == \\\"array\\\" and length == 0" >/dev/null; then\n'
-        printf '      message="approved"\n'
+        printf '      progress="$(tuicr review list --repo %q | jq -r --arg s "$(cat %q)" ".[] | select(.slug == \\$s) | \\"\\(.reviewed_count)/\\(.file_count)\\"")"\n' "$repo" "$STATE_DIR/$(sha16 "$repo").slug"
+        printf '      if [ "${progress%%%%/*}" = "${progress#*/}" ]; then\n'
+        printf '        message="approved"\n'
+        printf '      else\n'
+        printf '        message="Human quit with $progress files reviewed and no new comments."\n'
+        printf '      fi\n'
         printf '      submit=0\n'
         printf '    else\n'
         printf '      comments_text="$(printf "%%s" "$comments" | jq -r ".[] | \\"- \\(.location): \\(.content)\\"")"\n'
@@ -173,17 +224,42 @@ cmd_start() {
         printf '    message="Human finished the review, but fetching new comments failed. Run the human-review comments subcommand manually."\n'
         printf '    submit=1\n'
         printf '  fi\n'
-        printf '  if tmux send-keys -t %q -l "$message" 2>/dev/null; then\n' "$agent_pane"
-        printf '    if [ "$submit" = 1 ]; then\n'
-        printf '      tmux send-keys -t %q Enter 2>/dev/null || true\n' "$agent_pane"
-        printf '    fi\n'
-        printf '  fi\n'
+        if [ "$MUX" = herdr ]; then
+            # agent prompt pastes multi-line text safely before pressing Enter.
+            printf '  if [ "$submit" = 1 ]; then\n'
+            # Fall back to plain text (not submitted) so comments are not lost when the agent is blocked.
+            printf '    herdr agent prompt %q "$message" >/dev/null 2>&1 || herdr pane send-text %q "$message" >/dev/null 2>&1\n' "$agent_pane" "$agent_pane"
+            printf '  else\n'
+            printf '    herdr pane send-text %q "$message" >/dev/null 2>&1\n' "$agent_pane"
+            printf '  fi\n'
+        else
+            printf '  if tmux send-keys -t %q -l "$message" 2>/dev/null; then\n' "$agent_pane"
+            printf '    if [ "$submit" = 1 ]; then\n'
+            printf '      tmux send-keys -t %q Enter 2>/dev/null || true\n' "$agent_pane"
+            printf '    fi\n'
+            printf '  fi\n'
+        fi
         printf 'fi\n'
         printf 'rm -f -- "$0"\n'
+        # A herdr tab keeps its shell after tuicr exits; close it so the next start is not blocked.
+        if [ "$MUX" = herdr ]; then
+            printf 'herdr tab close "$HERDR_TAB_ID" >/dev/null 2>&1\n'
+        fi
     } > "$launcher"
 
-    new_window="$(tmux new-window -d -P -F '#{window_id}' -a -n review -c "$repo" "bash $(printf '%q' "$launcher")")"
-    tmux select-window -t "$new_window"
+    if [ "$MUX" = herdr ]; then
+        local tab_json
+        tab_json="$(herdr tab create --workspace "$HERDR_WORKSPACE_ID" --label review --cwd "$repo")"
+        new_window="$(printf '%s' "$tab_json" | jq -r '.result.root_pane.pane_id')"
+        tab_id="$(printf '%s' "$tab_json" | jq -r '.result.tab.tab_id')"
+        if ! herdr pane run "$new_window" "exec bash $(printf '%q' "$launcher")" >/dev/null; then
+            herdr tab close "$tab_id" >/dev/null 2>&1 || true
+            rm -f -- "$launcher"
+            die "failed to launch tuicr in the review tab."
+        fi
+    else
+        new_window="$(tmux new-window -d -P -F '#{window_id}' -a -n review -c "$repo" "bash $(printf '%q' "$launcher")")"
+    fi
 
     local repohash slugfile slug slughash roundfile round i
     repohash="$(sha16 "$repo")"
@@ -206,7 +282,17 @@ cmd_start() {
             round=$((round + 1))
             printf '%s\n' "$round" > "$roundfile"
             printf '%s\n' "$slug"
-            return
+            # Post before showing the review so the human never sees it half-filled.
+            local posted=0
+            if [ -n "$comments_file" ]; then
+                ( cmd_add --repo "$repo" --input "$comments_file" ) || posted=1
+            fi
+            if [ "$MUX" = herdr ]; then
+                herdr tab focus "$tab_id" >/dev/null
+            else
+                tmux select-window -t "$new_window"
+            fi
+            return "$posted"
         fi
     done
     die "tuicr did not create a session within 30s (maybe it failed to start)."
@@ -224,12 +310,18 @@ cmd_comments() {
         comments="$(tuicr review comments --repo "$repo" --session "$slug")"
     fi
 
+    if [ "${PASSTHRU[0]:-}" = "--mine" ]; then
+        printf '%s' "$comments" | jq --arg agent "${AGENT_USER}[" 'map(select((.author // "") | startswith($agent)))'
+        return
+    fi
+
     slughash="$(sha16 "$slug")"
     seenfile="$STATE_DIR/${slughash}.seen"
     touch "$seenfile"
 
-    filtered="$(printf '%s' "$comments" | jq --rawfile seenraw "$seenfile" '
+    filtered="$(printf '%s' "$comments" | jq --rawfile seenraw "$seenfile" --arg agent "${AGENT_USER}[" '
         ($seenraw | split("\n") | map(select(length > 0))) as $s
+        | map(select((.author // "") | startswith($agent) | not))
         | map(select(.id as $id | ($s | index($id | tostring)) | not))
     ')"
 
@@ -241,10 +333,11 @@ cmd_comments() {
 cmd_add() {
     parse_repo_arg "$@"
     need tuicr; need jq
-    local repo slug slughash roundfile round seenfile out id active_slug
+    local repo slug slughash roundfile round active_slug
     repo="$(resolve_repo "$REPO")"
 
-    active_slug="$(tuicr review list --repo "$repo" 2>/dev/null | jq -r '[.[] | select(.active == true)] | if length == 1 then .[0].slug else empty end')"
+    # Prefer the slug start picked; another tuicr may be open on the same repo.
+    active_slug="$(tuicr review list --repo "$repo" 2>/dev/null | jq -r --arg s "$(cat "$STATE_DIR/$(sha16 "$repo").slug" 2>/dev/null)" '[.[] | select(.active == true) | .slug] | if index($s) then $s elif length == 1 then .[0] else empty end')"
     if [ -z "$active_slug" ]; then
         die "no active review session; run 'start <scope>' first, then re-post this comment."
     fi
@@ -264,16 +357,42 @@ cmd_add() {
         fi
     }
 
-    out="$(add_once)" || die "posting failed (session may have just closed); run 'start <scope>' and re-post."
-
-    seenfile="$STATE_DIR/${slughash}.seen"
-    touch "$seenfile"
-    if ! id="$(printf '%s' "$out" | jq -r '.id // empty' 2>/dev/null)" || [ -z "$id" ] || [ "$id" = "null" ]; then
-        printf '%s\n' "$out"
-        die "comment was posted but its id could not be parsed; it may resurface in 'comments' output"
+    if [ "${PASSTHRU[0]:-}" = "--input" ]; then
+        [ "${#PASSTHRU[@]}" -eq 2 ] || die "usage: add [--repo PATH] --input FILE"
+        local drafts obj out n=0 failed=0
+        drafts="$(read_comments "${PASSTHRU[1]}")" || die "invalid comments file ${PASSTHRU[1]}"
+        [ -n "$drafts" ] || die "no comments in ${PASSTHRU[1]}"
+        while IFS= read -r obj; do
+            n=$((n + 1))
+            if ! out="$(tuicr review add --repo "$repo" --session "$slug" --username "${AGENT_USER}[r${round}]" --input "$obj")"; then
+                echo "error: comment $n failed: $obj" >&2
+                failed=$((failed + 1))
+                continue
+            fi
+            # Posted either way; a parse failure must not trigger a re-post.
+            printf '%s' "$out" | jq -c '{id, location}' 2>/dev/null || printf '%s\n' "$out"
+        done <<< "$drafts"
+        [ "$failed" -eq 0 ] || die "$failed of $n comments failed; re-post only those with add --input."
+        return
     fi
-    printf '%s\n' "$id" >> "$seenfile"
-    printf '%s\n' "$out"
+
+    add_once || die "posting failed (session may have just closed); run 'start <scope>' and re-post."
+}
+
+cmd_delete() {
+    parse_repo_arg "$@"
+    need tuicr; need jq
+    [ "${#PASSTHRU[@]}" -eq 1 ] || die "usage: delete [--repo PATH] <comment-id>"
+    local repo slug id comments
+    repo="$(resolve_repo "$REPO")"
+    slug="$(resolve_slug "$repo")"
+    id="${PASSTHRU[0]}"
+    comments="$(tuicr review comments --repo "$repo" --session "$slug")" || die "cannot read session $slug"
+    # Only agent comments; human comments are the reviewer's record.
+    printf '%s' "$comments" \
+        | jq -e --arg id "$id" --arg agent "${AGENT_USER}[" 'any(.[]; .id == $id and ((.author // "") | startswith($agent)))' >/dev/null \
+        || die "comment $id is not an agent comment in session $slug"
+    tuicr review delete --repo "$repo" --session "$slug" --comment-id "$id"
 }
 
 main() {
@@ -283,6 +402,7 @@ main() {
         start) shift; cmd_start "$@" ;;
         comments) shift; cmd_comments "$@" ;;
         add) shift; cmd_add "$@" ;;
+        delete) shift; cmd_delete "$@" ;;
         *) usage; exit 1 ;;
     esac
 }
