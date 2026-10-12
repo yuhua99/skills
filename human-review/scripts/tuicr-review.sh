@@ -27,7 +27,8 @@ Subcommands:
 
   add [--repo PATH] --input FILE
       Post every JSON object in FILE, in order (keys: file, line, end_line,
-      side, comment_type, content); prints {id, location} per comment.
+      side, comment_type, content, commit); prints {id, location} per comment.
+      'commit' without 'file' targets that commit's message entry.
 
   delete [--repo PATH] <comment-id>
       Delete an agent comment from the current review.
@@ -47,8 +48,13 @@ prune_state() {
 
 # Comments file -> one compact JSON object per line; rejects unknown keys,
 # which tuicr would silently ignore (misplacing or untyping the comment).
+# A commit-level comment ('commit', no 'file') lands on tuicr's synthetic
+# "Commit Message (<sha7>)" entry; the libgit2 backend abbreviates to 7.
 read_comments() {
-    jq -c 'if type == "object" and has("content") and (keys - ["file","line","end_line","side","comment_type","content"] == []) then . else error("bad comment: \(tojson)") end' "$1"
+    jq -c 'if type == "object" and has("content") and (keys - ["file","line","end_line","side","comment_type","content","commit"] == []) then . else error("bad comment: \(tojson)") end
+        | if has("commit") and (has("file") | not) then
+            if (.commit | type == "string" and length >= 7) and (has("line") | not) then .file = "Commit Message (\(.commit[0:7]))" else error("commit-level comment needs a sha of 7+ chars and no line: \(tojson)") end
+          else . end' "$1"
 }
 
 resolve_repo() {

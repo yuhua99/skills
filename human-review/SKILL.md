@@ -17,14 +17,17 @@ Write comments in **zh-tw**.
 
 Ask once if SCOPE is missing. Use `working`, a revision/range, or `pr <n>`.
 
-Comments file: one JSON object per line, posted in order. Keys: `file`, `line`, `end_line`, `side` (`old|new`, default `new`), `comment_type` (`issue|suggestion|note|praise`), `content`. Omit `line` for a file-level comment; omit `file` too for a review-level one. Other keys are rejected.
+Comments file: one JSON object per line, posted in order. Keys: `file`, `line`, `end_line`, `side` (`old|new`, default `new`), `comment_type` (`issue|suggestion|note|praise`), `content`, `commit`. Omit `line` for a file-level comment; omit `file` too for a review-level one. Other keys are rejected.
+
+`commit` (SHA, 7+ chars) without `file` makes a **commit-level** comment: it sits on that commit's `Commit Message` entry and shows only while the human has that one commit selected (`(`/`)` cycle commits). Only for revision/range scopes.
 
 `start` exits non-zero after printing the slug → the review is open but stderr lists comments that failed; put those in a new file and `add --input` it instead of `start` again. They land after the others.
 
 ## Workflow
-1. Read the scoped `git show/diff` and surrounding code.
+1. Read the scoped diff (`git diff A..B` for a range, so line numbers match tuicr's combined diff) and surrounding code.
+   For revision/range scopes, also list the scoped commits (`git log --reverse A..B` for a range) and read each commit's message and diff (`git show SHA`), including changes later overwritten or reverted.
    Act as the change's author walking a human through the implementation, rather than conducting a separate defect review.
-   Done when you can explain the old and new behavior of each meaningful changed block.
+   Done when you can explain the old and new behavior of each meaningful changed block and, for revision/range scopes, each commit's role.
 
 2. Group hunks by concern and draft all comments into a temp comments file.
    Split each hunk into logical blocks of one or a few adjacent lines. Explain each block's old behavior -> change -> new behavior, and why; explain intent and effects rather than paraphrasing syntax.
@@ -35,7 +38,8 @@ Comments file: one JSON object per line, posted in order. Keys: `file`, `line`, 
    Done when every changed hunk is covered by block-level explanations or explicitly included in a brief-summary exception above.
 
 3. Order the file, then run `start SCOPE --comments FILE`:
-   - Review-level first: the change's purpose, which concern to read first, and why.
+   - Review-level first: the change's purpose, which concern to read first, and why. For a multi-commit range, also the commit reading order and that `(`/`)` step through commits.
+   - Commit-level (revision/range scopes only): one per commit identified in step 1, explaining what it does and why, then the reading order of its files/concerns. For `working` or `pr <n>`, use review-level context instead.
    - Inline: the block-level explanations and brief summaries from step 2. Anchor each to the relevant code.
    - File-level: only context not already covered by the review-level or inline comments.
    - Use `issue` only for problems.
